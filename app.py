@@ -5,6 +5,8 @@ import os
 import json, base64, requests
 from datetime import datetime
 import time  # 【修改点 1】引入 time 用于重试等待
+import re
+import pandas as pd
 
 # ================= GitHub 读写函数 =================
 
@@ -173,6 +175,19 @@ with tab1:
                     if result.stdout and result.stdout.strip():
                         st.code(f"调试：捕获到 {len(result.stdout)} 个字符", language="text")
                         st.markdown(result.stdout)
+
+                        score_pattern = r'\b(\d{1,2})[:\-比](\d{1,2})\b'
+                        found_scores = re.findall(score_pattern, result.stdout)
+
+                        top5_scores = []
+                        for s in found_scores:
+                            score_str = f"{s[0]}:{s[1]}"
+                            if score_str not in top5_scores:
+                               top5_scores.append(score_str)
+                            if len(top5_scores) >= 5:
+                               break
+
+                        st.session_state.top5_cs_scores = top5_scores
                         
                         # 【修改点 7】保存记录时，把所有参数都存进 params，方便以后回填
                         record = {
@@ -213,6 +228,21 @@ with tab1:
 # ================= Tab 2: 投注凭证 =================
 
 with tab2:
+    # 👇 注意缩进：这里面的所有代码都在 with tab2 内部
+    def save_bets_table():
+        """当表格内容改变时，自动保存到 session_state"""
+        if "bets_editor" in st.session_state:
+            st.session_state.final_bets_df = st.session_state.bets_editor
+            
+    # 1. 初始化表格数据（如果还没有的话）
+    if "final_bets_df" not in st.session_state:
+        st.session_state.final_bets_df = pd.DataFrame({
+            "玩法": ["胜平负", "让球", "大小球", "波胆"],
+            "选项": ["主胜", "主-1", "大2.5", "1:0"],
+            "赔率": [1.50, 1.80, 1.90, 6.50],
+            "注数": [1, 1, 1, 1]
+        })
+        
     st.header("💰 投注策略与凭证生成")
     st.info("请先在第一阶段生成预测报告，再基于实际看到的波胆赔率输入下方。")
 
@@ -222,28 +252,45 @@ with tab2:
 
     st.caption("📝 在下方表格中逐行录入波胆赔率（支持增删改）")
     
-    if "cs_odds_data" not in st.session_state:
-        st.session_state.cs_odds_data = [
-            {"score": "1-0", "odds": 6.40}, {"score": "2-0", "odds": 7.10},
-            {"score": "1-1", "odds": 8.00}, {"score": "2-1", "odds": 8.90},
-            {"score": "0-0", "odds": 11.50},
-        ]
+    # 2. 一键导入 Top5 波胆比分
+    if "top5_cs_scores" in st.session_state and len(st.session_state.top5_cs_scores) > 0:
+        if st.button("✨ 一键导入 Tab1 Top5 波胆比分", type="primary"):
+            current_df = st.session_state.final_bets_df.copy()
+            new_rows = []
+            for score in st.session_state.top5_cs_scores:
+                new_rows.append({"玩法": "波胆", "选项": score, "赔率": 8.00, "注数": 1})
+            new_df = pd.concat([current_df, pd.DataFrame(new_rows)], ignore_index=True)
+            st.session_state.final_bets_df = new_df
+            
+            if "bets_editor" in st.session_state:
+                del st.session_state.bets_editor 
+            st.rerun() 
     
+    # 3. 渲染表格并绑定回调
     edited_df = st.data_editor(
-        st.session_state.cs_odds_data,
-        column_config={
-            "score": st.column_config.TextColumn("比分", width="small"),
-            "odds": st.column_config.NumberColumn("赔率", format="%.2f", step=0.01, min_value=1.0),
-        },
-        num_rows="dynamic", hide_index=True, use_container_width=True, key="cs_odds_editor"
+        st.session_state.final_bets_df, 
+        num_rows="dynamic",
+        use_container_width=True,
+        key="bets_editor",
+        on_change=save_bets_table
     )
-    st.session_state.cs_odds_data = edited_df
     
-    valid_rows = [r for r in edited_df if r["score"] and r["odds"] > 0]
+    # 4. 提取表格里的有效数据，准备传给 predict2.py
+    # (确保 edited_df 是一堆字典的列表)
+    valid_rows = []
+    for index, row in edited_df.iterrows():
+        try:
+            score = str(row.get("选项", "")).strip()
+            odds = float(row.get("赔率", 0))
+            if score and odds > 0:
+                valid_rows.append({"score": score, "odds": odds})
+        except:
+            pass
+            
     custom_odds = ",".join(f"{r['score']}:{r['odds']:.2f}" for r in valid_rows)
     
+    # 5. 生成投注凭证按钮
     if st.button("📜 生成投注凭证", type="primary"):
-        # 【修改点 8】Tab2 同样直接从 session_state 获取 Tab1 填写的球队和赔率数据
         cmd = [sys.executable, "predict2.py",
                "--home", st.session_state.home_team,
                "--away", st.session_state.away_team,
@@ -261,7 +308,7 @@ with tab2:
         if st.session_state.home_elo > 0: cmd.extend(["--home_elo", str(st.session_state.home_elo)])
         if st.session_state.away_elo > 0: cmd.extend(["--away_elo", str(st.session_state.away_elo)])
         if st.session_state.home_xg > 0: cmd.extend(["--home_xg", str(st.session_state.home_xg)])
-        if st.session_state.away_xg > 0: cmd.extend(["--away_xg", str(st.session_state.away_xg)])
+        if st.session_state.away_elo > 0: cmd.extend(["--away_xg", str(st.session_state.away_xg)])
 
         with st.spinner("⏳ 正在计算投注凭证..."):
             try:
