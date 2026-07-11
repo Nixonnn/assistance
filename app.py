@@ -139,6 +139,18 @@ with tab1:
                        st.code(f"调试：捕获到 {len(result.stdout)} 个字符", language="text")
                        # 正式渲染 Markdown 报告
                        st.markdown(result.stdout)
+                       record = {
+                           "params": {
+                               "home_team": home_team,
+                               "away_team": away_team,
+                               "home_odds": odds_h,
+                               "away_odds": odds_a
+                           },
+                           "report": result.stdout
+                       }
+                       with st.spinner("正在保存历史记录到云端..."):
+                           if save_history_to_github(record):
+                               st.success("✅ 分析记录已同步至 GitHub 仓库")
                     else:
                        st.error("⚠️ 虽然脚本成功运行，但捕获到的标准输出为空！")
                        st.code("（空输出）")
@@ -213,10 +225,43 @@ with tab2:
                     st.success("✅ 投注凭证生成成功！")
                     st.markdown("---")
                     st.markdown(result.stdout)
+                    record = {
+                        "params": {
+                            "home_team": home_team,
+                            "away_team": away_team,
+                            "home_odds": odds_h,
+                            "away_odds": odds_a,
+                            "stake": stake,
+                            "strategy": strategy_map[strategy]
+                        },
+                        "report": result.stdout
+                    }
+                    with st.spinner("正在保存投注凭证到云端..."):
+                        if save_history_to_github(record):
+                            st.success("✅ 投注凭证已同步至 GitHub 仓库")
                 else:
                     st.error("❌ 生成失败！")
                     st.code(result.stderr)
             except Exception as e:
                 st.error(f"发生错误: {e}") 
 
+# ---- 侧边栏历史记录 ----
+with st.sidebar:
+    st.header("📜 历史分析记录")
+    
+    history, _ = load_history_from_github()
+    
+    if not history:
+        st.info("暂无历史记录")
+    else:
+        for i, rec in enumerate(history):
+            params = rec.get("params", {})
+            label = f"{rec['timestamp'][:16]} | {params.get('home_team','')} vs {params.get('away_team','')}"
+            if st.button(label, key=f"hist_{i}", use_container_width=True):
+                # 回填表单参数到 session_state
+                st.session_state["home_team"] = params.get("home_team", "")
+                st.session_state["away_team"] = params.get("away_team", "")
+                st.session_state["odds_h"] = params.get("home_odds", 1.55)
+                st.session_state["odds_a"] = params.get("away_odds", 5.80)
+                st.rerun()
 # streamlit run app.py
