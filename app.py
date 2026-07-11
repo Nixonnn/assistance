@@ -4,6 +4,7 @@ import sys
 import os
 import json, base64, requests, streamlit as st
 from datetime import datetime
+import time
 
 @st.cache_data(ttl=300)  # 缓存5分钟，避免频繁调用API触发限流
 def load_history_from_github():
@@ -25,35 +26,54 @@ def load_history_from_github():
         st.error(f"读取历史记录失败: {e}")
         return [], None
 
-def save_history_to_github(record: dict):
-    """通过GitHub API追加保存分析记录"""
-    history, old_sha = load_history_from_github()
+def save_history_to_github(record: dict, max_retries: int = 3):
+    """通过GitHub API追加保存分析记录（含冲突自动重试）"""
     
-    record["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    history.insert(0, record)
-    history = history[:100]  # 限制最多100条
-    
-    new_content = base64.b64encode(
-        json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8")
-    ).decode("utf-8")
-    
-    url = f"https://api.github.com/repos/{st.secrets['github']['repo']}/contents/{st.secrets['github']['file_path']}"
-    headers = {"Authorization": f"token {st.secrets['github']['token']}"}
-    payload = {
-        "message": f"📊 Add analysis: {record['params'].get('home_team','')} vs {record['params'].get('away_team','')} at {record['timestamp']}",
-        "content": new_content,
-        "branch": st.secrets['github'].get('branch', 'main'),
-    }
-    if old_sha:
-        payload["sha"] = old_sha  # 防止并发覆盖
+    for attempt in range(max_retries):
+        # 【关键修复】每次重试前强制清除缓存，确保拿到最新 SHA
+        load_history_from_github.clear()
         
-    resp = requests.put(url, json=payload, headers=headers, timeout=15)
-    if resp.status_code in (200, 201):
-        load_history_from_github.clear()  # 清除缓存，下次读取最新数据
-        return True
-    else:
-        st.error(f"保存失败 ({resp.status_code}): {resp.text}")
-        return False
+        history, old_sha = load_history_from_github()
+        
+        record["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 避免重复插入相同时间戳的记录（可选优化）
+        if history and history[0].get("timestamp") == record["timestamp"]:
+            record["timestamp"] += f".{attempt}"
+            
+        history.insert(0, record)
+        history = history[:100]
+        
+        new_content = base64.b64encode(
+            json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8")
+        ).decode("utf-8")
+        
+        url = f"https://api.github.com/repos/{st.secrets['github']['repo']}/contents/{st.secrets['github']['file_path']}"
+        headers = {"Authorization": f"token {st.secrets['github']['token']}"}
+        payload = {
+            "message": f"📊 Add analysis: {record['params'].get('home_team','')} vs {record['params'].get('away_team','')} at {record['timestamp']}",
+            "content": new_content,
+            "branch": st.secrets['github'].get('branch', 'main'),
+        }
+        if old_sha:
+            payload["sha"] = old_sha
+        
+        resp = requests.put(url, json=payload, headers=headers, timeout=15)
+        
+        if resp.status_code in (200, 201):
+            load_history_from_github.clear()  # 保存成功后再次清除缓存
+            return True
+        elif resp.status_code == 409 and attempt < max_retries - 1:
+            # 409 冲突：等待后重试
+            wait_time = (attempt + 1) * 1.5
+            st.warning(f"⚠️ 检测到并发冲突，{wait_time}s 后自动重试 ({attempt+1}/{max_retries})...")
+            time.sleep(wait_time)
+            continue
+        else:
+            st.error(f"保存失败 ({resp.status_code}): {resp.text}")
+            return False
+    
+    st.error("❌ 多次重试后仍无法保存，请稍后再试")
+    return False
 
 my_env = os.environ.copy()
 my_env['PYTHONIOENCODING'] = 'utf-8'
