@@ -1,0 +1,8 @@
+[server]
+headless = true
+port = 8501
+maxUploadSize = 5
+
+[runner]
+# 防止长时间计算被误判为卡死
+magicEnabled = false
