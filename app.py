@@ -2,6 +2,58 @@ import streamlit as st
 import subprocess
 import sys
 import os
+import json, base64, requests, streamlit as st
+from datetime import datetime
+
+@st.cache_data(ttl=300)  # 缓存5分钟，避免频繁调用API触发限流
+def load_history_from_github():
+    """从GitHub仓库读取历史记录"""
+    try:
+        url = f"https://api.github.com/repos/{st.secrets['github']['repo']}/contents/{st.secrets['github']['file_path']}"
+        headers = {"Authorization": f"token {st.secrets['github']['token']}"}
+        params = {"ref": st.secrets['github'].get('branch', 'main')}
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        if resp.status_code == 404:
+            return [], None  # 文件不存在
+        resp.raise_for_status()
+        
+        content = base64.b64decode(resp.json()["content"]).decode("utf-8")
+        sha = resp.json()["sha"]  # 用于后续更新时防止冲突
+        return json.loads(content), sha
+    except Exception as e:
+        st.error(f"读取历史记录失败: {e}")
+        return [], None
+
+def save_history_to_github(record: dict):
+    """通过GitHub API追加保存分析记录"""
+    history, old_sha = load_history_from_github()
+    
+    record["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    history.insert(0, record)
+    history = history[:100]  # 限制最多100条
+    
+    new_content = base64.b64encode(
+        json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8")
+    ).decode("utf-8")
+    
+    url = f"https://api.github.com/repos/{st.secrets['github']['repo']}/contents/{st.secrets['github']['file_path']}"
+    headers = {"Authorization": f"token {st.secrets['github']['token']}"}
+    payload = {
+        "message": f"📊 Add analysis: {record['params'].get('home_team','')} vs {record['params'].get('away_team','')} at {record['timestamp']}",
+        "content": new_content,
+        "branch": st.secrets['github'].get('branch', 'main'),
+    }
+    if old_sha:
+        payload["sha"] = old_sha  # 防止并发覆盖
+        
+    resp = requests.put(url, json=payload, headers=headers, timeout=15)
+    if resp.status_code in (200, 201):
+        load_history_from_github.clear()  # 清除缓存，下次读取最新数据
+        return True
+    else:
+        st.error(f"保存失败 ({resp.status_code}): {resp.text}")
+        return False
 
 my_env = os.environ.copy()
 my_env['PYTHONIOENCODING'] = 'utf-8'
