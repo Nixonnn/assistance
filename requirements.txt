@@ -1,0 +1,5 @@
+streamlit>=1.28.0
+# 根据 predict2.py 实际使用的库添加，例如：
+numpy
+scipy
+pandas
