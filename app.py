@@ -2,11 +2,13 @@ import streamlit as st
 import subprocess
 import sys
 import os
-import json, base64, requests, streamlit as st
+import json, base64, requests
 from datetime import datetime
-import time
+import time  # 【修改点 1】引入 time 用于重试等待
 
-@st.cache_data(ttl=300)  # 缓存5分钟，避免频繁调用API触发限流
+# ================= GitHub 读写函数 =================
+
+@st.cache_data(ttl=60)  # 【修改点 2】缓存时间从 300 缩短到 60 秒，减少冲突
 def load_history_from_github():
     """从GitHub仓库读取历史记录"""
     try:
@@ -16,11 +18,11 @@ def load_history_from_github():
         
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         if resp.status_code == 404:
-            return [], None  # 文件不存在
+            return [], None
         resp.raise_for_status()
         
         content = base64.b64decode(resp.json()["content"]).decode("utf-8")
-        sha = resp.json()["sha"]  # 用于后续更新时防止冲突
+        sha = resp.json()["sha"]
         return json.loads(content), sha
     except Exception as e:
         st.error(f"读取历史记录失败: {e}")
@@ -28,18 +30,11 @@ def load_history_from_github():
 
 def save_history_to_github(record: dict, max_retries: int = 3):
     """通过GitHub API追加保存分析记录（含冲突自动重试）"""
-    
     for attempt in range(max_retries):
-        # 【关键修复】每次重试前强制清除缓存，确保拿到最新 SHA
-        load_history_from_github.clear()
-        
+        load_history_from_github.clear()  # 【修改点 3】每次重试前强制清缓存
         history, old_sha = load_history_from_github()
         
         record["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # 避免重复插入相同时间戳的记录（可选优化）
-        if history and history[0].get("timestamp") == record["timestamp"]:
-            record["timestamp"] += f".{attempt}"
-            
         history.insert(0, record)
         history = history[:100]
         
@@ -56,14 +51,13 @@ def save_history_to_github(record: dict, max_retries: int = 3):
         }
         if old_sha:
             payload["sha"] = old_sha
-        
+            
         resp = requests.put(url, json=payload, headers=headers, timeout=15)
         
         if resp.status_code in (200, 201):
-            load_history_from_github.clear()  # 保存成功后再次清除缓存
+            load_history_from_github.clear()
             return True
         elif resp.status_code == 409 and attempt < max_retries - 1:
-            # 409 冲突：等待后重试
             wait_time = (attempt + 1) * 1.5
             st.warning(f"⚠️ 检测到并发冲突，{wait_time}s 后自动重试 ({attempt+1}/{max_retries})...")
             time.sleep(wait_time)
@@ -71,118 +65,128 @@ def save_history_to_github(record: dict, max_retries: int = 3):
         else:
             st.error(f"保存失败 ({resp.status_code}): {resp.text}")
             return False
-    
+            
     st.error("❌ 多次重试后仍无法保存，请稍后再试")
     return False
 
 my_env = os.environ.copy()
 my_env['PYTHONIOENCODING'] = 'utf-8'
 
-# 设置页面标题
-st.set_page_config(page_title="⚽ Win-assistance", layout="centered", page_icon="⚽")
+# ================= 页面设置与初始化 =================
+
+st.set_page_config(page_title="⚽ 足球概率预测系统", layout="centered", page_icon="⚽")
 st.title("⚽ Multi-Model Bayesian Football Engine")
 st.caption("v1.2 — 基于 Elo / xG / Dixon-Coles / Monte Carlo 的贝叶斯融合预测")
 
-# 分离两个阶段：预测报告 vs 投注凭证
+# 【修改点 4】在渲染任何 UI 之前，统一初始化所有表单字段的默认值到 session_state
+DEFAULTS = {
+    "home_team": "法国", "away_team": "摩洛哥",
+    "home_elo": 0.0, "away_elo": 0.0,
+    "home_xg": 0.0, "away_xg": 0.0,
+    "odds_h": 1.55, "odds_d": 4.10, "odds_a": 5.80,
+    "ou_line": "2.5", "ou_over": 2.04, "ou_under": 1.84,
+    "ah_line": "-1", "ah_home": 2.01, "ah_away": 1.89,
+    "neutral": True,
+}
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
 tab1, tab2 = st.tabs(["📊 第一阶段：生成预测报告", "💰 第二阶段：生成投注凭证"])
 
-# ---- 第一阶段：预测报告 ----
+# ================= Tab 1: 预测报告 =================
+
 with tab1:
     st.header("🎯 输入比赛数据")
 
     col1, col2 = st.columns(2)
+    # 【修改点 5】所有 widget 放弃 value=硬编码，全部使用 key= 绑定 session_state
     with col1:
-        home_team = st.text_input("主队名称", value="法国")
-        home_elo = st.number_input("主队 Elo (可选, 留空自动反推)", value=0.0, step=1.0, format="%.0f")
-        home_xg = st.number_input("主队 xG (可选, 留空自动反推)", value=0.0, step=0.01, format="%.2f")
+        st.text_input("主队名称", key="home_team")
+        st.number_input("主队 Elo (可选, 留空自动反推)", step=1.0, format="%.0f", key="home_elo")
+        st.number_input("主队 xG (可选, 留空自动反推)", step=0.01, format="%.2f", key="home_xg")
     with col2:
-        away_team = st.text_input("客队名称", value="摩洛哥")
-        away_elo = st.number_input("客队 Elo (可选)", value=0.0, step=1.0, format="%.0f")
-        away_xg = st.number_input("客队 xG (可选)", value=0.0, step=0.01, format="%.2f")
+        st.text_input("客队名称", key="away_team")
+        st.number_input("客队 Elo (可选)", step=1.0, format="%.0f", key="away_elo")
+        st.number_input("客队 xG (可选)", step=0.01, format="%.2f", key="away_xg")
 
     st.subheader("赔率与盘口")
     col3, col4 = st.columns(2)
     with col3:
-        odds_h = st.number_input("主胜赔率", value=1.55, step=0.01, format="%.2f")
-        odds_d = st.number_input("平局赔率", value=4.10, step=0.01, format="%.2f")
-        odds_a = st.number_input("客胜赔率", value=5.80, step=0.01, format="%.2f")
+        st.number_input("主胜赔率", step=0.01, format="%.2f", key="odds_h")
+        st.number_input("平局赔率", step=0.01, format="%.2f", key="odds_d")
+        st.number_input("客胜赔率", step=0.01, format="%.2f", key="odds_a")
     with col4:
-        ou_line = st.text_input("大小球盘口 (如 2.5)", value="2.5")
-        ou_over = st.number_input("大球赔率", value=2.04, step=0.01, format="%.2f")
-        ou_under = st.number_input("小球赔率", value=1.84, step=0.01, format="%.2f")
-        ah_line = st.text_input("让球盘口 (如 -1)", value="-1")
-        ah_home = st.number_input("让球方赔率", value=2.01, step=0.01, format="%.2f")
-        ah_away = st.number_input("受让方赔率", value=1.89, step=0.01, format="%.2f")
+        st.text_input("大小球盘口 (如 2.5)", key="ou_line")
+        st.number_input("大球赔率", step=0.01, format="%.2f", key="ou_over")
+        st.number_input("小球赔率", step=0.01, format="%.2f", key="ou_under")
+        st.text_input("让球盘口 (如 -1)", key="ah_line")
+        st.number_input("让球方赔率", step=0.01, format="%.2f", key="ah_home")
+        st.number_input("受让方赔率", step=0.01, format="%.2f", key="ah_away")
 
-    neutral = st.checkbox("中立场", value=True)
+    st.checkbox("中立场", key="neutral")
 
-    # 生成预测按钮
     if st.button("🚀 生成预测报告", type="primary"):
-        # 构建命令行参数
+        # 【修改点 6】构建命令时，直接从 st.session_state 读取数据
         cmd = [sys.executable, "predict2.py",
-               "--home", home_team,
-               "--away", away_team,
-               "--odds", str(odds_h), str(odds_d), str(odds_a),
-               "--ou_line", str(ou_line),
-               "--ou_odds", str(ou_over), str(ou_under),
-               "--ah_line", str(ah_line),
-               "--ah_odds", str(ah_home), str(ah_away),
+               "--home", st.session_state.home_team,
+               "--away", st.session_state.away_team,
+               "--odds", str(st.session_state.odds_h), str(st.session_state.odds_d), str(st.session_state.odds_a),
+               "--ou_line", str(st.session_state.ou_line),
+               "--ou_odds", str(st.session_state.ou_over), str(st.session_state.ou_under),
+               "--ah_line", str(st.session_state.ah_line),
+               "--ah_odds", str(st.session_state.ah_home), str(st.session_state.ah_away),
                "--no-interactive"]
 
-        if neutral:
+        if st.session_state.neutral:
             cmd.append("--neutral")
-        if home_elo > 0:
-            cmd.extend(["--home_elo", str(home_elo)])
-        if away_elo > 0:
-            cmd.extend(["--away_elo", str(away_elo)])
-        if home_xg > 0:
-            cmd.extend(["--home_xg", str(home_xg)])
-        if away_xg > 0:
-            cmd.extend(["--away_xg", str(away_xg)])
+        if st.session_state.home_elo > 0:
+            cmd.extend(["--home_elo", str(st.session_state.home_elo)])
+        if st.session_state.away_elo > 0:
+            cmd.extend(["--away_elo", str(st.session_state.away_elo)])
+        if st.session_state.home_xg > 0:
+            cmd.extend(["--home_xg", str(st.session_state.home_xg)])
+        if st.session_state.away_xg > 0:
+            cmd.extend(["--away_xg", str(st.session_state.away_xg)])
 
         with st.spinner("⏳ 正在调用物理计算引擎 `predict2.py`..."):
             try:
-                result = subprocess.run(
-                  cmd,
-                  capture_output=True,
-                  text=True,
-                  encoding='utf-8',          # 明确指定编码
-                  errors='replace',          # 遇到无法解码的字符用 � 代替
-                  timeout=30,
-                  env=my_env
-                )
+                result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, env=my_env)
                 if result.returncode == 0:
                     st.success("✅ 预测报告生成成功！")
                     st.markdown("---")
-                    # 调试：先显示原始输出长度和开头，确认有没有内容
                     if result.stdout and result.stdout.strip():
-                       st.code(f"调试：捕获到 {len(result.stdout)} 个字符", language="text")
-                       # 正式渲染 Markdown 报告
-                       st.markdown(result.stdout)
-                       record = {
-                           "params": {
-                               "home_team": home_team,
-                               "away_team": away_team,
-                               "home_odds": odds_h,
-                               "away_odds": odds_a
-                           },
-                           "report": result.stdout
-                       }
-                       with st.spinner("正在保存历史记录到云端..."):
-                           if save_history_to_github(record):
-                               st.success("✅ 分析记录已同步至 GitHub 仓库")
+                        st.code(f"调试：捕获到 {len(result.stdout)} 个字符", language="text")
+                        st.markdown(result.stdout)
+                        
+                        # 【修改点 7】保存记录时，把所有参数都存进 params，方便以后回填
+                        record = {
+                            "params": {
+                                "home_team": st.session_state.home_team, "away_team": st.session_state.away_team,
+                                "home_elo": st.session_state.home_elo, "away_elo": st.session_state.away_elo,
+                                "home_xg": st.session_state.home_xg, "away_xg": st.session_state.away_xg,
+                                "odds_h": st.session_state.odds_h, "odds_d": st.session_state.odds_d, "odds_a": st.session_state.odds_a,
+                                "ou_line": st.session_state.ou_line, "ou_over": st.session_state.ou_over, "ou_under": st.session_state.ou_under,
+                                "ah_line": st.session_state.ah_line, "ah_home": st.session_state.ah_home, "ah_away": st.session_state.ah_away,
+                                "neutral": st.session_state.neutral
+                            },
+                            "report": result.stdout
+                        }
+                        with st.spinner("正在保存历史记录到云端..."):
+                            if save_history_to_github(record):
+                                st.success("✅ 分析记录已同步至 GitHub 仓库")
                     else:
-                       st.error("⚠️ 虽然脚本成功运行，但捕获到的标准输出为空！")
-                       st.code("（空输出）")
+                        st.error("⚠️ 虽然脚本成功运行，但捕获到的标准输出为空！")
                 else:
                     st.error("❌ 引擎运行出错！")
                     st.code(result.stderr)
             except FileNotFoundError:
-                st.error("❌ 未找到 `predict2.py` 文件，请确保该文件与 `app.py` 在同一目录下。")
+                st.error("❌ 未找到 `predict2.py` 文件。")
             except subprocess.TimeoutExpired:
-                st.error("⏰ 计算超时，请检查脚本是否卡死。")
+                st.error("⏰ 计算超时。")
 
-# ---- 第二阶段：投注凭证 ----
+# ================= Tab 2: 投注凭证 =================
+
 with tab2:
     st.header("💰 投注策略与凭证生成")
     st.info("请先在第一阶段生成预测报告，再基于实际看到的波胆赔率输入下方。")
@@ -191,98 +195,61 @@ with tab2:
     strategy = st.radio("选择策略", ["A (等收益分投)", "B (保本主攻分投)"], index=0)
     strategy_map = {"A (等收益分投)": "A", "B (保本主攻分投)": "B"}
 
-    #st.caption("输入您实际看到的 TOP 5 波胆赔率 (格式: 比分:赔率，用逗号分隔)")
-    #custom_odds = st.text_input("波胆赔率", value="1-0:6.40,2-0:7.10,1-1:8.00,2-1:8.90,0-0:11.5")
     st.caption("📝 在下方表格中逐行录入波胆赔率（支持增删改）")
     
-    # 初始化 session_state，避免每次刷新重置
     if "cs_odds_data" not in st.session_state:
         st.session_state.cs_odds_data = [
-            {"score": "1-0", "odds": 6.40},
-            {"score": "2-0", "odds": 7.10},
-            {"score": "1-1", "odds": 8.00},
-            {"score": "2-1", "odds": 8.90},
+            {"score": "1-0", "odds": 6.40}, {"score": "2-0", "odds": 7.10},
+            {"score": "1-1", "odds": 8.00}, {"score": "2-1", "odds": 8.90},
             {"score": "0-0", "odds": 11.50},
         ]
     
-    # 可编辑表格：用户直接在界面上修改
     edited_df = st.data_editor(
         st.session_state.cs_odds_data,
         column_config={
             "score": st.column_config.TextColumn("比分", width="small"),
             "odds": st.column_config.NumberColumn("赔率", format="%.2f", step=0.01, min_value=1.0),
         },
-        num_rows="dynamic",   # 允许动态增删行
-        hide_index=True,
-        use_container_width=True,
-        key="cs_odds_editor"
+        num_rows="dynamic", hide_index=True, use_container_width=True, key="cs_odds_editor"
     )
-    
-    # 实时同步到 session_state
     st.session_state.cs_odds_data = edited_df
     
-    # 自动转换为脚本所需的 "比分:赔率,比分:赔率" 格式
     valid_rows = [r for r in edited_df if r["score"] and r["odds"] > 0]
     custom_odds = ",".join(f"{r['score']}:{r['odds']:.2f}" for r in valid_rows)
+    
     if st.button("📜 生成投注凭证", type="primary"):
-        # 这里需要重复第一阶段的部分参数构建，但我们直接调用脚本
-        # 简便起见，由于界面已经填了参数，复用逻辑，但为了严谨，我们在后台重新构建完整命令
-        # 为了简化用户操作，这里需要重新读取上面的输入框。因为Streamlit的tab是独立的，需要重新获取值（或者用session_state，但为简化，我们用相同的变量名，注意作用域）
-        # 实际上，上面的变量在tab1中定义，在tab2中也能访问到（只要不重名）。
-        # 但为了保险，直接从tab1拿数据会有作用域问题，这里重新定义一遍（或者用全局变量）。最简单的方式：复制上面的输入框？但那样太冗余。
-        # 更优方案：使用st.session_state存储，但为了代码简洁，我直接在此处重新用同名的text_input获取？但会有重复输入的问题。
-        # 针对这个演示，我建议用户直接在第二阶段重新输入一次球队和赔率，或者我们通过修改代码使用session_state。
-        # 为了不让代码过于复杂，我写一个简易版本：提示用户手动输入完整命令行，或者我们直接将完整的参数塞进一个会话中。
-        # 鉴于用户是技术向，我推荐在第二阶段提供"快速生成"按钮，自动复用第一阶段填写的参数（但需要跨tab共享数据）。
-        
-        st.warning("⚠️ 为简化逻辑，第二阶段将默认复用第一阶段输入的球队和赔率数据（需确保第一阶段已填写）。")
-        # 构造完整命令
+        # 【修改点 8】Tab2 同样直接从 session_state 获取 Tab1 填写的球队和赔率数据
         cmd = [sys.executable, "predict2.py",
-               "--home", home_team,
-               "--away", away_team,
-               "--odds", str(odds_h), str(odds_d), str(odds_a),
-               "--ou_line", str(ou_line),
-               "--ou_odds", str(ou_over), str(ou_under),
-               "--ah_line", str(ah_line),
-               "--ah_odds", str(ah_home), str(ah_away),
+               "--home", st.session_state.home_team,
+               "--away", st.session_state.away_team,
+               "--odds", str(st.session_state.odds_h), str(st.session_state.odds_d), str(st.session_state.odds_a),
+               "--ou_line", str(st.session_state.ou_line),
+               "--ou_odds", str(st.session_state.ou_over), str(st.session_state.ou_under),
+               "--ah_line", str(st.session_state.ah_line),
+               "--ah_odds", str(st.session_state.ah_home), str(st.session_state.ah_away),
                "--stake", str(stake),
                "--choice", strategy_map[strategy],
                "--custom-odds", custom_odds,
                "--no-interactive"]
-        if neutral:
-            cmd.append("--neutral")
-        if home_elo > 0:
-            cmd.extend(["--home_elo", str(home_elo)])
-        if away_elo > 0:
-            cmd.extend(["--away_elo", str(away_elo)])
-        if home_xg > 0:
-            cmd.extend(["--home_xg", str(home_xg)])
-        if away_xg > 0:
-            cmd.extend(["--away_xg", str(away_xg)])
+               
+        if st.session_state.neutral: cmd.append("--neutral")
+        if st.session_state.home_elo > 0: cmd.extend(["--home_elo", str(st.session_state.home_elo)])
+        if st.session_state.away_elo > 0: cmd.extend(["--away_elo", str(st.session_state.away_elo)])
+        if st.session_state.home_xg > 0: cmd.extend(["--home_xg", str(st.session_state.home_xg)])
+        if st.session_state.away_xg > 0: cmd.extend(["--away_xg", str(st.session_state.away_xg)])
 
         with st.spinner("⏳ 正在计算投注凭证..."):
             try:
-                result = subprocess.run(
-                  cmd,
-                  capture_output=True,
-                  text=True,
-                  encoding='utf-8',          # 明确指定编码
-                  errors='replace',          # 遇到无法解码的字符用 � 代替
-                  timeout=30,
-                  env=my_env
-                )
+                result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30, env=my_env)
                 if result.returncode == 0:
                     st.success("✅ 投注凭证生成成功！")
                     st.markdown("---")
                     st.markdown(result.stdout)
                     record = {
                         "params": {
-                            "home_team": home_team,
-                            "away_team": away_team,
-                            "home_odds": odds_h,
-                            "away_odds": odds_a,
-                            "stake": stake,
-                            "strategy": strategy_map[strategy]
+                            "home_team": st.session_state.home_team, "away_team": st.session_state.away_team,
+                            "odds_h": st.session_state.odds_h, "odds_a": st.session_state.odds_a,
+                            "stake": stake, "strategy": strategy_map[strategy]
                         },
                         "report": result.stdout
                     }
@@ -295,10 +262,10 @@ with tab2:
             except Exception as e:
                 st.error(f"发生错误: {e}") 
 
-# ---- 侧边栏历史记录 ----
+# ================= 侧边栏历史记录 =================
+
 with st.sidebar:
     st.header("📜 历史分析记录")
-    
     history, _ = load_history_from_github()
     
     if not history:
@@ -306,12 +273,13 @@ with st.sidebar:
     else:
         for i, rec in enumerate(history):
             params = rec.get("params", {})
-            label = f"{rec['timestamp'][:16]} | {params.get('home_team','')} vs {params.get('away_team','')}"
+            label = f"{rec.get('timestamp', '')[:16]} | {params.get('home_team','')} vs {params.get('away_team','')}"
+            
+            # 【修改点 9】点击历史记录时，直接把参数写回 session_state 对应的 key，然后 rerun
             if st.button(label, key=f"hist_{i}", use_container_width=True):
-                # 回填表单参数到 session_state
-                st.session_state["home_team"] = params.get("home_team", "")
-                st.session_state["away_team"] = params.get("away_team", "")
-                st.session_state["odds_h"] = params.get("home_odds", 1.55)
-                st.session_state["odds_a"] = params.get("away_odds", 5.80)
+                for field in DEFAULTS.keys():
+                    if field in params:
+                        st.session_state[field] = params[field]
                 st.rerun()
+
 # streamlit run app.py
