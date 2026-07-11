@@ -118,26 +118,26 @@ with tab1:
     # 【修改点 5】所有 widget 放弃 value=硬编码，全部使用 key= 绑定 session_state
     with col1:
         st.text_input("主队名称", key="home_team")
-        st.number_input("主队 Elo (可选, 留空自动反推)", step=1.0, format="%.0f", key="home_elo")
-        st.number_input("主队 xG (可选, 留空自动反推)", step=0.01, format="%.2f", key="home_xg")
+        st.number_input("主队 Elo (可选, 留空自动反推)", value=0.0, step=1.0, format="%.0f", key="home_elo")
+        st.number_input("主队 xG (可选, 留空自动反推)", value=0.0, step=0.01, format="%.2f", key="home_xg")
     with col2:
         st.text_input("客队名称", key="away_team")
-        st.number_input("客队 Elo (可选)", step=1.0, format="%.0f", key="away_elo")
-        st.number_input("客队 xG (可选)", step=0.01, format="%.2f", key="away_xg")
+        st.number_input("客队 Elo (可选)", value=0.0, step=1.0, format="%.0f", key="away_elo")
+        st.number_input("客队 xG (可选)", value=0.0, step=0.01, format="%.2f", key="away_xg")
 
     st.subheader("赔率与盘口")
     col3, col4 = st.columns(2)
     with col3:
-        st.number_input("主胜赔率", step=0.01, format="%.2f", key="odds_h")
-        st.number_input("平局赔率", step=0.01, format="%.2f", key="odds_d")
-        st.number_input("客胜赔率", step=0.01, format="%.2f", key="odds_a")
+        st.number_input("主胜赔率", value=0.0, step=0.01, format="%.2f", key="odds_h")
+        st.number_input("平局赔率", value=0.0, step=0.01, format="%.2f", key="odds_d")
+        st.number_input("客胜赔率", value=0.0, step=0.01, format="%.2f", key="odds_a")
     with col4:
         st.text_input("大小球盘口 (如 2.5)", key="ou_line")
-        st.number_input("大球赔率", step=0.01, format="%.2f", key="ou_over")
-        st.number_input("小球赔率", step=0.01, format="%.2f", key="ou_under")
+        st.number_input("大球赔率", value=0.0, step=0.01, format="%.2f", key="ou_over")
+        st.number_input("小球赔率", value=0.0, step=0.01, format="%.2f", key="ou_under")
         st.text_input("让球盘口 (如 -1)", key="ah_line")
-        st.number_input("让球方赔率", step=0.01, format="%.2f", key="ah_home")
-        st.number_input("受让方赔率", step=0.01, format="%.2f", key="ah_away")
+        st.number_input("让球方赔率", value=0.0, step=0.01, format="%.2f", key="ah_home")
+        st.number_input("受让方赔率", value=0.0, step=0.01, format="%.2f", key="ah_away")
 
     st.checkbox("中立场", key="neutral")
 
@@ -177,12 +177,22 @@ with tab1:
                         # 【修改点 7】保存记录时，把所有参数都存进 params，方便以后回填
                         record = {
                             "params": {
-                                "home_team": st.session_state.home_team, "away_team": st.session_state.away_team,
-                                "home_elo": st.session_state.home_elo, "away_elo": st.session_state.away_elo,
-                                "home_xg": st.session_state.home_xg, "away_xg": st.session_state.away_xg,
-                                "odds_h": st.session_state.odds_h, "odds_d": st.session_state.odds_d, "odds_a": st.session_state.odds_a,
-                                "ou_line": st.session_state.ou_line, "ou_over": st.session_state.ou_over, "ou_under": st.session_state.ou_under,
-                                "ah_line": st.session_state.ah_line, "ah_home": st.session_state.ah_home, "ah_away": st.session_state.ah_away,
+                                "home_team": st.session_state.home_team, 
+                                "away_team": st.session_state.away_team,
+                                # 👇 必须有这些赔率字段！
+                                "home_elo": st.session_state.home_elo, 
+                                "away_elo": st.session_state.away_elo,
+                                "home_xg": st.session_state.home_xg, 
+                                "away_xg": st.session_state.away_xg,
+                                "odds_h": st.session_state.odds_h, 
+                                "odds_d": st.session_state.odds_d, 
+                                "odds_a": st.session_state.odds_a,
+                                "ou_line": st.session_state.ou_line, 
+                                "ou_over": st.session_state.ou_over, 
+                                "ou_under": st.session_state.ou_under,
+                                "ah_line": st.session_state.ah_line, 
+                                "ah_home": st.session_state.ah_home, 
+                                "ah_away": st.session_state.ah_away,
                                 "neutral": st.session_state.neutral
                             },
                             "report": result.stdout
