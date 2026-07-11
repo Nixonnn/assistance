@@ -92,6 +92,21 @@ for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+def fill_form_callback(params_dict):
+    """点击历史记录时的回调：在输入框渲染前，将参数安全填入"""
+    for field in DEFAULTS.keys():
+        if field in params_dict:
+            val = params_dict[field]
+            # 类型修正：防止从 JSON 读出来的数字变成字符串导致报错
+            expected_type = type(DEFAULTS[field])
+            try:
+                if expected_type == float: val = float(val)
+                elif expected_type == int: val = int(val)
+                elif expected_type == bool: val = bool(val)
+            except (ValueError, TypeError):
+                val = DEFAULTS[field]
+            st.session_state[field] = val
+
 tab1, tab2 = st.tabs(["📊 第一阶段：生成预测报告", "💰 第二阶段：生成投注凭证"])
 
 # ================= Tab 1: 预测报告 =================
@@ -276,10 +291,12 @@ with st.sidebar:
             label = f"{rec.get('timestamp', '')[:16]} | {params.get('home_team','')} vs {params.get('away_team','')}"
             
             # 【修改点 9】点击历史记录时，直接把参数写回 session_state 对应的 key，然后 rerun
-            if st.button(label, key=f"hist_{i}", use_container_width=True):
-                for field in DEFAULTS.keys():
-                    if field in params:
-                        st.session_state[field] = params[field]
-                st.rerun()
+            st.button(
+                label, 
+                key=f"hist_{i}", 
+                use_container_width=True,
+                on_click=fill_form_callback,  # 绑定刚才写的新函数
+                args=(params,)                # 把当前这条记录的 params 传给函数
+            )
 
 # streamlit run app.py
