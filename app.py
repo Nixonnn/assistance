@@ -79,7 +79,7 @@ my_env = os.environ.copy()
 my_env['PYTHONIOENCODING'] = 'utf-8'
 
 # 设置页面标题
-st.set_page_config(page_title="⚽ 足球概率预测系统", layout="centered", page_icon="⚽")
+st.set_page_config(page_title="⚽ Win-assistance", layout="centered", page_icon="⚽")
 st.title("⚽ Multi-Model Bayesian Football Engine")
 st.caption("v1.2 — 基于 Elo / xG / Dixon-Coles / Monte Carlo 的贝叶斯融合预测")
 
