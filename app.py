@@ -171,9 +171,39 @@ with tab2:
     strategy = st.radio("选择策略", ["A (等收益分投)", "B (保本主攻分投)"], index=0)
     strategy_map = {"A (等收益分投)": "A", "B (保本主攻分投)": "B"}
 
-    st.caption("输入您实际看到的 TOP 5 波胆赔率 (格式: 比分:赔率，用逗号分隔)")
-    custom_odds = st.text_input("波胆赔率", value="1-0:6.40,2-0:7.10,1-1:8.00,2-1:8.90,0-0:11.5")
-
+    #st.caption("输入您实际看到的 TOP 5 波胆赔率 (格式: 比分:赔率，用逗号分隔)")
+    #custom_odds = st.text_input("波胆赔率", value="1-0:6.40,2-0:7.10,1-1:8.00,2-1:8.90,0-0:11.5")
+    st.caption("📝 在下方表格中逐行录入波胆赔率（支持增删改）")
+    
+    # 初始化 session_state，避免每次刷新重置
+    if "cs_odds_data" not in st.session_state:
+        st.session_state.cs_odds_data = [
+            {"score": "1-0", "odds": 6.40},
+            {"score": "2-0", "odds": 7.10},
+            {"score": "1-1", "odds": 8.00},
+            {"score": "2-1", "odds": 8.90},
+            {"score": "0-0", "odds": 11.50},
+        ]
+    
+    # 可编辑表格：用户直接在界面上修改
+    edited_df = st.data_editor(
+        st.session_state.cs_odds_data,
+        column_config={
+            "score": st.column_config.TextColumn("比分", width="small"),
+            "odds": st.column_config.NumberColumn("赔率", format="%.2f", step=0.01, min_value=1.0),
+        },
+        num_rows="dynamic",   # 允许动态增删行
+        hide_index=True,
+        use_container_width=True,
+        key="cs_odds_editor"
+    )
+    
+    # 实时同步到 session_state
+    st.session_state.cs_odds_data = edited_df
+    
+    # 自动转换为脚本所需的 "比分:赔率,比分:赔率" 格式
+    valid_rows = [r for r in edited_df if r["score"] and r["odds"] > 0]
+    custom_odds = ",".join(f"{r['score']}:{r['odds']:.2f}" for r in valid_rows)
     if st.button("📜 生成投注凭证", type="primary"):
         # 这里需要重复第一阶段的部分参数构建，但我们直接调用脚本
         # 简便起见，由于界面已经填了参数，复用逻辑，但为了严谨，我们在后台重新构建完整命令
