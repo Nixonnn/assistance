@@ -656,17 +656,25 @@ def main():
 
         top5_names = [score for score, _ in top5_scores]
 
-        # 命令行指定的自定义赔率应用 (格式 "1-1:6.7,1-0:5.2")
+        # 命令行指定的自定义赔率应用 (格式 "1-1:6.7,1-0:5.2" 或 "1:1:6.7")
         if args.custom_odds:
             try:
                 pairs = args.custom_odds.split(",")
                 for pair in pairs:
                     if ":" in pair:
-                        name, val = pair.split(":")
-                        name = name.strip()
+                        # 【核心修复1】使用 rsplit 从右侧分割 1 次。
+                        # 这样即使字符串是 "1:1:8.00"，也会完美拆分为 name="1:1", val="8.00"，绝不报错！
+                        name, val = pair.rsplit(":", 1)
+                        
+                        # 【核心修复2】强制清洗比分格式，把冒号统一替换为减号
+                        # 因为引擎底层字典的 Key 全是减号 (如 "1-1")，不替换就匹配不上！
+                        name = name.strip().replace(":", "-")
                         val = val.strip()
+                        
                         if name and val:
                             score_odds[name] = float(val)
+                            # 可选：打印调试信息，让你在终端肉眼确认赔率已注入
+                            # print(f"[DEBUG] 成功加载真实赔率: {name} -> {val}")
             except Exception as e:
                 print(f"⚠️ 解析自定义波胆赔率时出错: {e}")
 
