@@ -299,7 +299,7 @@ def generate_ascii_bar(prob, length=10):
 def format_prediction_report(home_team, away_team, elo_probs, xg_probs, dc_probs, mc_probs, 
                              p_market_fair, p_final, btts_probs, over_under_probs, top5_scores,
                              xg_home, xg_away, dc_tau, mc_h_band, mc_a_band, odds, dist_dc, 
-                             total_stake=1000.0, market_context=None):
+                             total_stake=1000.0, market_context=None, custom_odds_dict=None):
     """格式化为专为手机窄屏适配的紧凑型、强可读性 Markdown 报告"""
 
     # 映射胜平负
@@ -417,7 +417,11 @@ def format_prediction_report(home_team, away_team, elo_probs, xg_probs, dc_probs
     score_odds = {}
     for (x, y), p in dist_dc.items():
         score_str = f"{x}-{y}"
-        score_odds[score_str] = round(max(3.0, 0.85 / max(1e-15, p)), 2)
+        # 【核心修复】优先使用真实赔率，如果没有，再使用数学估算赔率
+        if custom_odds_dict and score_str in custom_odds_dict:
+            score_odds[score_str] = custom_odds_dict[score_str]
+        else:
+            score_odds[score_str] = round(max(3.0, 0.85 / max(1e-15, p)), 2)
 
     top5_names = [score for score, _ in top5_scores]
 
@@ -440,18 +444,18 @@ def format_prediction_report(home_team, away_team, elo_probs, xg_probs, dc_probs
     for name in top5_names:
         odds_val = score_odds[name]
         stake_val = total_stake * (1.0 / odds_val) / inv_odds_sum
-        report.append(f"- 比分 `{name}` (估算 {odds_val:.2f}) — 投 `{stake_val:.1f}` 元 (中返 {strat_a_return:.1f} 元)")
+        report.append(f"- 比分 `{name}` (赔率 {odds_val:.2f}) — 投 `{stake_val:.1f}` 元 (中返 {strat_a_return:.1f} 元)")
     report.append(f"👑 **策略 A 净期望利润**: `{strat_a_net_profit:+.1f}` 元 (固定净回报率: `{strat_a_roi:+.1f}`%)")
 
     report.append("### 🔵 策略 B: 保本主攻分投 (中后期爆发, 主攻暴利)")
-    report.append(f"- 💛 **保本对冲** `{hedge_score}` (估算 {h_odds:.2f}) — 投 `{hedge_stake:.1f}` 元 (中返 `{total_stake:.0f}` 元, 保本不赔)")
+    report.append(f"- 💛 **保本对冲** `{hedge_score}` (赔率 {h_odds:.2f}) — 投 `{hedge_stake:.1f}` 元 (中返 `{total_stake:.0f}` 元, 保本不赔)")
     for name in other_scores:
         p = dict(top5_scores).get(name, 0.0)
         odds_val = score_odds[name]
         stake_val = remaining_stake * (p / other_prob_sum) if other_prob_sum > 0 else 0.0
         ret_val = stake_val * odds_val
         net_profit_val = ret_val - total_stake
-        report.append(f"- 🚀 **主攻比分** `{name}` (估算 {odds_val:.2f}) — 投 `{stake_val:.1f}` 元 (中返 `{ret_val:.1f}` 元, 净赚 `{net_profit_val:+.1f}` 元)")
+        report.append(f"- 🚀 **主攻比分** `{name}` (赔率 {odds_val:.2f}) — 投 `{stake_val:.1f}` 元 (中返 `{ret_val:.1f}` 元, 净赚 `{net_profit_val:+.1f}` 元)")
     report.append("💪 **策略 B 综述**: 重仓主打胜局高回报, 一旦爆冷打出平局首选比分, 退还全部本金, 本场无风险。")
 
     return "\n".join(report)
@@ -483,6 +487,21 @@ def main():
     parser.add_argument("--custom-odds", dest="custom_odds", default=None, help="自定义波胆赔率字符串, 格式如 '1-1:6.7,1-0:5.2'")
 
     args = parser.parse_args()
+
+    # 【新增】提前解析自定义赔率字典，供报告预览使用
+    custom_odds_dict = {}
+    if args.custom_odds:
+        try:
+            pairs = args.custom_odds.split(",")
+            for pair in pairs:
+                if ":" in pair:
+                    name, val = pair.rsplit(":", 1)
+                    name = name.strip().replace(":", "-")
+                    val = val.strip()
+                    if name and val:
+                        custom_odds_dict[name] = float(val)
+        except Exception:
+            pass
 
     # 提前计算市场无抽水真实概率 (p_market_fair), 以做逆向工程
     p_market_fair, shin_z = shin_overround_removal(args.odds)
@@ -604,12 +623,12 @@ def main():
     over_under_probs = (p_0_1, p_2_3, p_4_plus)
     btts_probs = (p_btts_y, p_btts_n)
 
-    # 6. 生成漂亮的 Markdown 报告并打印
+    # 6. 生成漂亮的 Markdown 报告并打印 (传入真实赔率字典)
     report = format_prediction_report(
         args.home, args.away, elo_probs, xg_probs, dc_probs, mc_probs, 
         p_market_fair, p_final, btts_probs, over_under_probs, top5_scores,
         args.home_xg, args.away_xg, args.rho, mc_h_band, mc_a_band,
-        args.odds, dist_dc, args.stake, market_context
+        args.odds, dist_dc, args.stake, market_context, custom_odds_dict
     )
     print(report)
 
@@ -650,33 +669,16 @@ def main():
         else:
             hedge_score = best_d_score[0] if best_d_score[1] > best_hw_score[1] else best_hw_score[0]
 
+        # 【修改】使用传入的 custom_odds_dict，保持数据一致
         score_odds = {}
         for (x, y), p in dist_dc.items():
-            score_odds[f"{x}-{y}"] = round(max(3.0, 0.85 / max(1e-15, p)), 2)
+            score_str = f"{x}-{y}"
+            if custom_odds_dict and score_str in custom_odds_dict:
+                score_odds[score_str] = custom_odds_dict[score_str]
+            else:
+                score_odds[score_str] = round(max(3.0, 0.85 / max(1e-15, p)), 2)
 
         top5_names = [score for score, _ in top5_scores]
-
-        # 命令行指定的自定义赔率应用 (格式 "1-1:6.7,1-0:5.2" 或 "1:1:6.7")
-        if args.custom_odds:
-            try:
-                pairs = args.custom_odds.split(",")
-                for pair in pairs:
-                    if ":" in pair:
-                        # 【核心修复1】使用 rsplit 从右侧分割 1 次。
-                        # 这样即使字符串是 "1:1:8.00"，也会完美拆分为 name="1:1", val="8.00"，绝不报错！
-                        name, val = pair.rsplit(":", 1)
-                        
-                        # 【核心修复2】强制清洗比分格式，把冒号统一替换为减号
-                        # 因为引擎底层字典的 Key 全是减号 (如 "1-1")，不替换就匹配不上！
-                        name = name.strip().replace(":", "-")
-                        val = val.strip()
-                        
-                        if name and val:
-                            score_odds[name] = float(val)
-                            # 可选：打印调试信息，让你在终端肉眼确认赔率已注入
-                            # print(f"[DEBUG] 成功加载真实赔率: {name} -> {val}")
-            except Exception as e:
-                print(f"⚠️ 解析自定义波胆赔率时出错: {e}")
 
         # 用户手动交互输入赔率逻辑
         if args.interactive and not args.choice:
