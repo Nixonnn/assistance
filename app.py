@@ -290,7 +290,7 @@ with tab2:
             score_val = c2.text_input(
                 f"score_{i}",
                 value=default_score,
-                placeholder="如 2:1",
+                placeholder="如 2-1",
                 key=f"form_score_{i}",
                 label_visibility="collapsed"
             )
